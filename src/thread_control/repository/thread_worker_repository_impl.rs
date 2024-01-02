@@ -42,6 +42,14 @@ mod tests {
     use super::*;
     use tokio::test;
 
+    fn my_sync_function() {
+        println!("Synchronous function is executed!");
+    }
+
+    async fn my_async_function() {
+        println!("Asynchronous function is executed!");
+    }
+
     #[test]
     async fn test_singleton() {
         let instance1 = ThreadWorkerRepositoryImpl::get_instance();
@@ -69,24 +77,98 @@ mod tests {
 
         // Retrieve the saved worker and execute its function
         if let Some(worker) = repository.thread_worker_list.get("TestWorker") {
-            let function = worker.get_will_be_execute_function().unwrap();
+            let function_arc = Arc::clone(&worker.get_will_be_execute_function().unwrap());
 
-            // Use tokio::task::spawn_blocking to execute the function in a blocking context
-            tokio::task::spawn_blocking(move || {
-                // Synchronously execute the function using tokio::task::block_in_place
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Runtime::new()
-                        .unwrap()
-                        .block_on(function());
-                });
-            })
-                .await
-                .unwrap();
+            // Lock the Mutex to get the guard
+            let guard = function_arc.lock().await;
+
+            // Extract the closure from the Box inside the Mutex guard
+            let function = &*guard;
+
+            // Call the closure and execute the future
+            let future = function();
+            future.await;
 
             // Add an assertion to check if the worker name matches
             assert_eq!(worker.name(), "TestWorker");
         } else {
             panic!("Thread worker not found!");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_sync_thread_worker() {
+        let repository = ThreadWorkerRepositoryImpl::get_instance();
+
+        // Lock the mutex to access the repository
+        let mut repository = repository.lock().unwrap();
+
+        // Synchronous function
+        let sync_custom_function = || {
+            Box::pin(async {
+                my_sync_function();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        // Save a thread worker with a synchronous function
+        repository.save_thread_worker("SyncTestWorker", Some(Box::new(sync_custom_function)));
+
+        // Retrieve and execute the saved worker's function
+        if let Some(worker) = repository.thread_worker_list.get("SyncTestWorker") {
+            let function_arc = Arc::clone(&worker.get_will_be_execute_function().unwrap());
+
+            // Lock the Mutex to get the guard
+            let guard = function_arc.lock().await;
+
+            // Extract the closure from the Box inside the Mutex guard
+            let function = &*guard;
+
+            // Call the closure and execute the future
+            let future = function();
+            future.await;
+
+            // Add an assertion to check if the worker name matches
+            assert_eq!(worker.name(), "SyncTestWorker");
+        } else {
+            panic!("Thread worker not found: SyncTestWorker");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_async_thread_worker() {
+        let repository = ThreadWorkerRepositoryImpl::get_instance();
+
+        // Lock the mutex to access the repository
+        let mut repository = repository.lock().unwrap();
+
+        // Asynchronous function
+        let async_custom_function = || {
+            Box::pin(async {
+                my_async_function().await;
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        // Save a thread worker with an asynchronous function
+        repository.save_thread_worker("AsyncTestWorker", Some(Box::new(async_custom_function)));
+
+        // Retrieve and execute the saved worker's function
+        if let Some(worker) = repository.thread_worker_list.get("AsyncTestWorker") {
+            let function_arc = Arc::clone(&worker.get_will_be_execute_function().unwrap());
+
+            // Lock the Mutex to get the guard
+            let guard = function_arc.lock().await;
+
+            // Extract the closure from the Box inside the Mutex guard
+            let function = &*guard;
+
+            // Call the closure and execute the future
+            let future = function();
+            future.await;
+
+            // Add an assertion to check if the worker name matches
+            assert_eq!(worker.name(), "AsyncTestWorker");
+        } else {
+            panic!("Thread worker not found: AsyncTestWorker");
         }
     }
 }

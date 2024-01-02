@@ -1,10 +1,14 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 pub struct ThreadWorker {
     name: String,
-    will_be_execute_function: Option<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>>,
+    will_be_execute_function: Option<Arc<Mutex<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>>>>,
 }
 
 impl ThreadWorker {
@@ -12,9 +16,11 @@ impl ThreadWorker {
         name: &str,
         will_be_execute_function: Option<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>>,
     ) -> Self {
+        let arc_function = will_be_execute_function.map(|func| Arc::new(Mutex::new(func)));
+
         ThreadWorker {
             name: name.to_string(),
-            will_be_execute_function,
+            will_be_execute_function: arc_function,
         }
     }
 
@@ -24,8 +30,8 @@ impl ThreadWorker {
 
     pub fn get_will_be_execute_function(
         &self,
-    ) -> Option<&Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>> {
-        self.will_be_execute_function.as_ref()
+    ) -> Option<Arc<Mutex<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>>>> {
+        self.will_be_execute_function.clone()
     }
 }
 
@@ -39,7 +45,16 @@ impl PartialEq for ThreadWorker {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
             && match (&self.will_be_execute_function, &other.will_be_execute_function) {
-            (Some(f1), Some(f2)) => std::ptr::eq(f1.as_ref(), f2.as_ref()),
+            (Some(f1), Some(f2)) => {
+                // Use `.await` to wait for the Future to resolve to a MutexGuard
+                let guard1 = tokio::runtime::Runtime::new().unwrap().block_on(timeout(Duration::from_secs(5), f1.lock()));
+                let guard2 = tokio::runtime::Runtime::new().unwrap().block_on(timeout(Duration::from_secs(5), f2.lock()));
+
+                match (guard1, guard2) {
+                    (Ok(guard1), Ok(guard2)) => std::ptr::eq(&*guard1, &*guard2),
+                    _ => false, // Handle the case where the lock acquisition times out
+                }
+            }
             (None, None) => true,
             _ => false,
         }
@@ -53,7 +68,7 @@ impl fmt::Debug for ThreadWorker {
             .field(
                 "will_be_execute_function",
                 &match &self.will_be_execute_function {
-                    Some(_) => "Some(Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send>)",
+                    Some(_) => "Some(Arc<Mutex<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send>>>)",
                     None => "None",
                 },
             )
@@ -95,9 +110,23 @@ mod tests {
         };
 
         let worker = ThreadWorker::new("John Doe", Some(Box::new(custom_function)));
-        let worker2 = ThreadWorker::new("John Doe", Some(Box::new(custom_function)));
+        let found_function = worker.get_will_be_execute_function();
 
-        assert_eq!(worker, worker2);
+        assert_eq!(found_function.is_some(), true);
+
+        if let Some(arc_function) = found_function {
+            // Unwrap the Arc and lock the Mutex
+            let guard = arc_function.lock().await;
+
+            // Extract the closure from the Box
+            let function = &*guard;
+
+            // Call the closure and execute the future
+            let future = (function as &dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>)();
+            future.await;
+        } else {
+            println!("No custom function found!");
+        }
     }
 
     #[tokio::test]
@@ -113,8 +142,14 @@ mod tests {
 
         assert_eq!(found_function.is_some(), true);
 
-        if let Some(function) = found_function {
-            // 클로저 실행
+        if let Some(arc_function) = found_function {
+            // Unwrap the Arc and lock the Mutex
+            let guard = arc_function.lock().await;
+
+            // Extract the closure from the Box
+            let function = &*guard;
+
+            // Call the closure and execute the future
             let future = function();
             future.await;
         } else {
@@ -124,15 +159,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_my_sync_function() {
+        // Use Box::pin(async {}) to wrap the synchronous function call in an asynchronous block
         let custom_function = || -> Pin<Box<dyn Future<Output = ()>>> {
             Box::pin(async {
                 my_sync_function();
             })
         };
+
         let worker = ThreadWorker::new("John Doe", Some(Box::new(custom_function)));
 
-        if let Some(function) = worker.get_will_be_execute_function() {
-            // 클로저 실행
+        if let Some(arc_function) = worker.get_will_be_execute_function() {
+            let guard = arc_function.lock().await;
+
+            // Extract the closure from the Box
+            let function = &*guard;
+
+            // Call the closure and execute the future
             let future = function();
             future.await;
         } else {
@@ -142,17 +184,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_my_async_function() {
-        let custom_function = || -> Pin<Box<dyn Future<Output = ()>>> {
-            Box::pin(my_async_function())
+        let custom_function = || {
+            Box::pin(my_async_function()) as Pin<Box<dyn Future<Output = ()>>>
         };
+
         let worker = ThreadWorker::new("John Doe", Some(Box::new(custom_function)));
 
-        if let Some(function) = worker.get_will_be_execute_function() {
-            // 클로저 실행
+        if let Some(arc_function) = worker.get_will_be_execute_function() {
+            let guard = arc_function.lock().await;
+
+            // Extract the closure from the Box
+            let function = &*guard;
+
+            // Call the closure and execute the future
             let future = function();
             future.await;
         } else {
             println!("No custom function found!");
         }
     }
+
 }

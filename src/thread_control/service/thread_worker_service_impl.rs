@@ -1,52 +1,134 @@
-// use std::future::Future;
-// use std::pin::Pin;
-// use async_trait::async_trait;
-// use crate::thread_control::repository::thread_worker_repository::ThreadWorkerRepositoryTrait;
-// use crate::thread_control::repository::thread_worker_repository_impl::ThreadWorkerRepositoryImpl;
-// use crate::thread_control::service::thread_worker_service::ThreadWorkerServiceTrait;
-//
-// pub struct ThreadWorkerServiceImpl {
-//     repository: ThreadWorkerRepositoryImpl,
-// }
-//
-// impl ThreadWorkerServiceImpl {
-//     pub fn new(repository: ThreadWorkerRepositoryImpl) -> Self {
-//         ThreadWorkerServiceImpl { repository }
-//     }
-// }
-//
-// static mut THREAD_WORKER_SERVICE: Option<ThreadWorkerServiceImpl> = None;
-//
-// // Expose a function to get the singleton instance
-// pub fn get_instance() -> &'static ThreadWorkerServiceImpl {
-//     unsafe {
-//         if THREAD_WORKER_SERVICE.is_none() {
-//             let service_instance = ThreadWorkerServiceImpl::new(ThreadWorkerRepositoryImpl::new());
-//             THREAD_WORKER_SERVICE = Some(service_instance);
-//         }
-//         THREAD_WORKER_SERVICE.as_ref().unwrap()
-//     }
-// }
-//
-// #[async_trait]
-// impl ThreadWorkerServiceTrait for ThreadWorkerServiceImpl {
-//     fn save_async_thread_worker(mut self, name: &str, will_be_execute_function: fn()) {
-//         let async_function = || {
-//             Box::pin(async {
-//                 will_be_execute_function()
-//             }) as Pin<Box<dyn Future<Output = ()>>>
-//         };
-//
-//         self.repository.save_thread_worker(name, Some(Box::new(async_function)));
-//     }
-//
-//     fn save_sync_thead_worker(mut self, name: &str, will_be_execute_function: fn()) {
-//         let sync_function = || {
-//             Box::pin(async {
-//                 will_be_execute_function()
-//             }) as Pin<Box<dyn Future<Output = ()>>>
-//         };
-//
-//         self.repository.save_thread_worker(name, Some(Box::new(sync_function)));
-//     }
-// }
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use async_trait::async_trait;
+use lazy_static::lazy_static;
+use crate::thread_control::repository::thread_worker_repository::ThreadWorkerRepositoryTrait;
+use crate::thread_control::repository::thread_worker_repository_impl::ThreadWorkerRepositoryImpl;
+use crate::thread_control::service::thread_worker_service::ThreadWorkerServiceTrait;
+
+pub struct ThreadWorkerServiceImpl {
+    repository: Arc<Mutex<ThreadWorkerRepositoryImpl>>,
+}
+
+impl ThreadWorkerServiceImpl {
+    pub fn new(repository: Arc<Mutex<ThreadWorkerRepositoryImpl>>) -> Self {
+        ThreadWorkerServiceImpl { repository }
+    }
+
+    pub fn get_instance() -> Arc<Mutex<ThreadWorkerServiceImpl>> {
+        lazy_static! {
+            static ref INSTANCE: Arc<Mutex<ThreadWorkerServiceImpl>> =
+                Arc::new(Mutex::new(ThreadWorkerServiceImpl::new(ThreadWorkerRepositoryImpl::get_instance())));
+        }
+        INSTANCE.clone()
+    }
+}
+
+#[async_trait]
+impl ThreadWorkerServiceTrait for ThreadWorkerServiceImpl {
+    fn save_async_thread_worker(&mut self, name: &str, will_be_execute_function: Arc<Mutex<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send>>) {
+        let async_function = move || -> Pin<Box<dyn Future<Output = ()>>> {
+            let will_be_execute_function = Arc::clone(&will_be_execute_function);
+            Box::pin(async move {
+                (will_be_execute_function.lock().unwrap())().await
+            })
+        };
+
+        self.repository.lock().unwrap().save_thread_worker(name, Some(Box::new(async_function)));
+    }
+
+    fn save_sync_thread_worker(&mut self, name: &str, will_be_execute_function: Arc<Mutex<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send>>) {
+        let sync_function = move || -> Pin<Box<dyn Future<Output = ()>>> {
+            let will_be_execute_function = Arc::clone(&will_be_execute_function);
+            Box::pin(async move {
+                (will_be_execute_function.lock().unwrap())().await
+            })
+        };
+
+        self.repository.lock().unwrap().save_thread_worker(name, Some(Box::new(sync_function)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::test;
+
+    fn my_sync_function() {
+        println!("Synchronous function is executed!");
+    }
+
+    async fn my_async_function() {
+        println!("Asynchronous function is executed!");
+    }
+
+    #[test]
+    async fn test_save_async_thread_worker() {
+        let thread_worker_repository = ThreadWorkerRepositoryImpl::get_instance();
+        let mut service = ThreadWorkerServiceImpl::new(thread_worker_repository);
+        // let mut service = ThreadWorkerServiceImpl::get_instance();
+
+        let async_function = || -> Pin<Box<dyn Future<Output = ()>>> {
+            Box::pin(async {
+                println!("Custom async function executed!");
+            })
+        };
+
+        service.save_async_thread_worker("AsyncTestWorker", Arc::new(Mutex::new(async_function)));
+
+        // Retrieve the saved worker and execute its function
+        if let Some(worker) = service.repository.lock().unwrap().find_by_name("AsyncTestWorker") {
+            let function_arc = Arc::clone(&worker.get_will_be_execute_function().unwrap());
+
+            // Lock the Mutex to get the guard
+            let guard = function_arc.lock().await;
+
+            // Extract the closure from the Box inside the Mutex guard
+            let function = &*guard;
+
+            // Call the closure and execute the future
+            let future = function();
+            future.await;
+
+            // Add an assertion to check if the worker name matches
+            assert_eq!(worker.name(), "AsyncTestWorker");
+        } else {
+            panic!("Thread worker not found: AsyncTestWorker");
+        };
+    }
+
+    #[test]
+    async fn test_save_sync_thread_worker() {
+        let repository = ThreadWorkerRepositoryImpl::get_instance();
+        let mut service = ThreadWorkerServiceImpl::new(repository);
+
+        let sync_function = || -> Pin<Box<dyn Future<Output = ()>>> {
+            Box::pin(async {
+                println!("Custom sync function executed!");
+            })
+        };
+
+        service.save_sync_thread_worker("SyncTestWorker", Arc::new(Mutex::new(sync_function)));
+
+        // Retrieve the saved worker and execute its function
+        if let Some(worker) = service.repository.lock().unwrap().find_by_name("SyncTestWorker") {
+            let function_arc = Arc::clone(&worker.get_will_be_execute_function().unwrap());
+
+            // Lock the Mutex to get the guard
+            let guard = function_arc.lock().await;
+
+            // Extract the closure from the Box inside the Mutex guard
+            let function = &*guard;
+
+            // Call the closure and execute the future
+            let future = function();
+            future.await;
+
+            // Add an assertion to check if the worker name matches
+            assert_eq!(worker.name(), "SyncTestWorker");
+        } else {
+            panic!("Thread worker not found: SyncTestWorker");
+        };
+    }
+}

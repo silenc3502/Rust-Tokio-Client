@@ -35,6 +35,10 @@ impl ThreadWorkerRepositoryTrait for ThreadWorkerRepositoryImpl {
         let thread_worker = ThreadWorker::new(name, will_be_execute_function);
         self.thread_worker_list.insert(name.to_string(), thread_worker);
     }
+
+    fn find_by_name(&self, name: &str) -> Option<ThreadWorker> {
+        self.thread_worker_list.get(name).cloned()
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +174,26 @@ mod tests {
         } else {
             panic!("Thread worker not found: AsyncTestWorker");
         }
+    }
+
+    #[tokio::test]
+    async fn test_shared_thread_worker_list() {
+        let instance1 = ThreadWorkerRepositoryImpl::get_instance();
+        let instance2 = ThreadWorkerRepositoryImpl::get_instance();
+
+        // Lock the mutex to access the repository through instance1
+        let mut repository1 = instance1.lock().unwrap();
+
+        // Save a thread worker through instance1
+        repository1.save_thread_worker("SharedTestWorker", None);
+
+        // Drop the lock to allow other instances to access the repository
+        drop(repository1);
+
+        // Lock the mutex to access the repository through instance2
+        let repository2 = instance2.lock().unwrap();
+
+        // Check if the saved worker is visible through instance2
+        assert!(repository2.thread_worker_list.contains_key("SharedTestWorker"));
     }
 }

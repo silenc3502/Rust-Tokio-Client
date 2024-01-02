@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use async_trait::async_trait;
+use crate::thread_control::entity::thread_worker::ThreadWorker;
 
 #[async_trait]
 pub trait ThreadWorkerRepositoryTrait {
@@ -9,6 +10,6 @@ pub trait ThreadWorkerRepositoryTrait {
         name: &str,
         will_be_execute_function: Option<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>>,
     );
-    // fn find_by_name(&self, name: &str) -> Option<ThreadWorker>;
+    fn find_by_name(&self, name: &str) -> Option<ThreadWorker>;
     // fn start_thread_worker(&self, name: &str);
 }

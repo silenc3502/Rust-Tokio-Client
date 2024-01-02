@@ -11,5 +11,5 @@ pub trait ThreadWorkerRepositoryTrait {
         will_be_execute_function: Option<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>>,
     );
     fn find_by_name(&self, name: &str) -> Option<ThreadWorker>;
-    // fn start_thread_worker(&self, name: &str);
+    async fn start_thread_worker(&self, name: &str);
 }

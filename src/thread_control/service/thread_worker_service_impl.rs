@@ -51,7 +51,7 @@ impl ThreadWorkerServiceTrait for ThreadWorkerServiceImpl {
         self.repository.lock().unwrap().save_thread_worker(name, Some(Box::new(sync_function)));
     }
 
-    async fn start_thread_worker(self, name: &str) {
+    async fn start_thread_worker(&self, name: &str) {
         let repository_lock = self.repository.lock().unwrap();
 
         task::block_in_place(move || {

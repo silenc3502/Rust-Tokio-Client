@@ -31,8 +31,12 @@ impl ThreadWorker {
 
     pub fn get_will_be_execute_function(
         &self,
-    ) -> Option<Arc<Mutex<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send + 'static>>>> {
+    ) -> Option<Arc<Mutex<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send>>>> {
         self.will_be_execute_function.clone()
+    }
+
+    pub fn get_will_be_execute_function_ref(&self) -> Option<&Arc<Mutex<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send>>>> {
+        self.will_be_execute_function.as_ref()
     }
 }
 

@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
+use tokio::runtime::Handle;
+use tokio::task;
 use crate::thread_control::entity::thread_worker::ThreadWorker;
 use crate::thread_control::repository::thread_worker_repository::ThreadWorkerRepositoryTrait;
 
@@ -25,6 +28,10 @@ impl ThreadWorkerRepositoryImpl {
         }
         INSTANCE.clone()
     }
+
+    pub fn get_thread_worker_list(&self) -> &HashMap<String, ThreadWorker> {
+        &self.thread_worker_list
+    }
 }
 
 #[async_trait]
@@ -43,24 +50,39 @@ impl ThreadWorkerRepositoryTrait for ThreadWorkerRepositoryImpl {
     }
 
     async fn start_thread_worker(&self, name: &str) {
-        if let Some(worker) = self.thread_worker_list.get(name) {
-            let function_arc = Arc::clone(&worker.get_will_be_execute_function().unwrap());
+        let thread_worker_list = self.get_thread_worker_list();
 
-            // Lock the Mutex to get the guard
-            let guard = function_arc.lock().await;
+        if let Some(worker) = thread_worker_list.get(name) {
+            if let Some(function_arc_ref) = worker.get_will_be_execute_function_ref() {
+                // function_arc_ref의 타입: &Arc<Mutex<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>> + Send>>>
+                let guard = function_arc_ref.lock().await;
+                let box_function = &guard;
 
-            // Extract the closure from the Box inside the Mutex guard
-            let function = &*guard;
+                let fucking_gpt_test = &*guard;
+                let shit_gpt_test= &**fucking_gpt_test;
 
-            // Call the closure and execute the future
-            println!("Before calling the function");
-            let future = function.as_ref()();
-            future;
+                // &dyn Fn()
+                // let closure: &dyn Fn() = &*guard;
 
-            println!("After calling the function");
+                // custom_function: fn() -> Pin<Box<dyn Future<Output=()>>>
+                //                          Pin<Box<dyn Future<Output=()>>>
+                // let future: &dyn Fn() = shit_gpt_test();
+                // future;
 
-            // Add an assertion to check if the worker name matches
-            assert_eq!(worker.name(), name);
+                let future = shit_gpt_test();
+                // let runtime = tokio::runtime::Runtime::new().unwrap();
+                // runtime.block_on(future);
+                task::block_in_place(move || {
+                    Handle::current().block_on(async move {
+                        future.await
+                    });
+                });
+
+                // Add an assertion to check if the worker name matches
+                assert_eq!(worker.name(), name);
+            } else {
+                panic!("Thread worker function not found: {}", name);
+            }
         } else {
             panic!("Thread worker not found: {}", name);
         }
@@ -223,22 +245,51 @@ mod tests {
         assert!(repository2.thread_worker_list.contains_key("SharedTestWorker"));
     }
 
-    #[test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_new_save_thread_worker() {
+        // Execute the async code within the tokio runtime
         let repository = ThreadWorkerRepositoryImpl::get_instance();
 
         // Lock the mutex to access the repository
         let mut repository = repository.lock().unwrap();
 
-        let custom_function = || -> Pin<Box<dyn Future<Output = ()>>> {
+        let custom_function = || -> Pin<Box<dyn Future<Output=()>>>   {
             Box::pin(async {
                 println!("Custom function executed!");
             })
         };
 
+        // tokio::runtime::Builder::new_multi_thread()
+        //     .worker_threads(1)
+        //     .enable_all()
+        //     .build()
+        //     .unwrap()
+        //     .block_on(async {
+        //         custom_function
+        //     });
+
         // Save a thread worker
         repository.save_thread_worker("TestWorker", Some(Box::new(custom_function)));
 
         repository.start_thread_worker("TestWorker").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_new_save_sync_thread_worker() {
+        let repository = ThreadWorkerRepositoryImpl::get_instance();
+
+        // Lock the mutex to access the repository
+        let mut repository = repository.lock().unwrap();
+
+        // Synchronous function
+        let sync_custom_function = || {
+            Box::pin(async {
+                my_sync_function();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        // Save a thread worker with a synchronous function
+        repository.save_thread_worker("SyncTestWorker", Some(Box::new(sync_custom_function)));
+        repository.start_thread_worker("SyncTestWorker").await;
     }
 }

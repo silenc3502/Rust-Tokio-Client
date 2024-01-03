@@ -3,6 +3,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
+use tokio::runtime::Handle;
+use tokio::task;
 use crate::thread_control::repository::thread_worker_repository::ThreadWorkerRepositoryTrait;
 use crate::thread_control::repository::thread_worker_repository_impl::ThreadWorkerRepositoryImpl;
 use crate::thread_control::service::thread_worker_service::ThreadWorkerServiceTrait;
@@ -47,6 +49,16 @@ impl ThreadWorkerServiceTrait for ThreadWorkerServiceImpl {
         };
 
         self.repository.lock().unwrap().save_thread_worker(name, Some(Box::new(sync_function)));
+    }
+
+    async fn start_thread_worker(self, name: &str) {
+        let repository_lock = self.repository.lock().unwrap();
+
+        task::block_in_place(move || {
+            Handle::current().block_on(async move {
+                repository_lock.start_thread_worker(name).await;
+            });
+        });
     }
 }
 
@@ -130,5 +142,36 @@ mod tests {
         } else {
             panic!("Thread worker not found: SyncTestWorker");
         };
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_save_async_thread_and_start() {
+        let thread_worker_repository = ThreadWorkerRepositoryImpl::get_instance();
+        let mut service = ThreadWorkerServiceImpl::new(thread_worker_repository);
+        // let mut service = ThreadWorkerServiceImpl::get_instance();
+
+        let async_function = || -> Pin<Box<dyn Future<Output = ()>>> {
+            Box::pin(async {
+                println!("Custom async function executed!");
+            })
+        };
+
+        service.save_async_thread_worker("AsyncTestWorker", Arc::new(Mutex::new(async_function)));
+        service.start_thread_worker("AsyncTestWorker").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_save_sync_thread_and_start() {
+        let repository = ThreadWorkerRepositoryImpl::get_instance();
+        let mut service = ThreadWorkerServiceImpl::new(repository);
+
+        let sync_function = || -> Pin<Box<dyn Future<Output = ()>>> {
+            Box::pin(async {
+                println!("Custom sync function executed!");
+            })
+        };
+
+        service.save_sync_thread_worker("SyncTestWorker", Arc::new(Mutex::new(sync_function)));
+        service.start_thread_worker("SyncTestWorker").await;
     }
 }
